@@ -3,9 +3,12 @@ from utils import hash_data, encrypt, decrypt
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import padding
+import time
+
 
 class Gateway:
     """Central authority for registration and key management."""
+
     def __init__(self):
         self.mobile_keys = {}
         self.sensor_keys = {}
@@ -19,7 +22,9 @@ class Gateway:
         kj = hash_data(expert_id + "_kj")
         kl = hash_data(expert_id + "_kl")
         c = encrypt(kj, f"{expert_id}|{self.gateway_id}")
-        ni = hash_data(expert_id + epw.decode('latin1') + self.secret_key.decode('latin1'))
+        ni = hash_data(
+            expert_id + epw.decode("latin1") + self.secret_key.decode("latin1")
+        )
         self.expert_keys[expert_id] = (c, ni, kj, kl)
         return epw, rd, c, ni, kj, kl
 
@@ -34,33 +39,81 @@ class Gateway:
         self.sensor_keys[sensor_id] = (ku_snj, kgw_snj)
         return ku_snj, kgw_snj
 
-    def authenticate(self, expert_id, password, mobile_id, sensor_id, nonce):
-        # Step 1
-        rd = self.expert_keys[expert_id][1]
-        ni = hash_data(expert_id + hash_data(password + str(rd)).decode('latin1') + self.secret_key.decode('latin1'))
+    def authenticate_expert(self, expert_id, password, rd, mobile_id, sensor_id, nonce):
+        ni = hash_data(
+            expert_id
+            + hash_data(password + str(rd)).decode("latin1")
+            + self.secret_key.decode("latin1")
+        )
         if ni != self.expert_keys[expert_id][1]:
             return "Authentication failed", None
         h_mid = hash_data(expert_id)
-        cid_i = encrypt(self.expert_keys[expert_id][3], f"{h_mid.decode('latin1')}|{mobile_id}|{sensor_id}|{nonce}")
+        cid_i = encrypt(
+            self.expert_keys[expert_id][3],
+            f"{h_mid.decode('latin1')}|{nonce}|{mobile_id}|{sensor_id}|{time.time()}",
+        )
+        # return cid_i, self.expert_keys[expert_id][2], self.expert_keys[expert_id][3]
+
         # Step 2
         kj, kl = self.expert_keys[expert_id][2], self.expert_keys[expert_id][3]
         decrypted_cid_i = decrypt(kl, cid_i)
         h_mid_received, m, mobile_id_received, sensor_id_received, t1 = decrypted_cid_i.split('|')
         if h_mid_received != h_mid.decode('latin1') or mobile_id_received != mobile_id or sensor_id_received != sensor_id:
             return "Authentication failed", None
-        x = encrypt(self.sensor_keys[sensor_id][1], f"{expert_id}|{m}")
-        vi = encrypt(self.mobile_keys[mobile_id], f"{mobile_id}|{sensor_id}|{x.decode('latin1')}|{nonce}")
+        x = encrypt(self.sensor_keys[sensor_id][1], f"|{expert_id}|{m}")
+        vi = encrypt(self.mobile_keys[mobile_id], f"{mobile_id}|{sensor_id}|{x.decode('latin1')}|{nonce}|{time.time()}")
         # Step 3
         decrypted_vi = decrypt(self.mobile_keys[mobile_id], vi)
-        mobile_id_received, sensor_id_received, x_received, t3 = decrypted_vi.split('|')
+        mobile_id_received, sensor_id_received, x_received, t3, samp = decrypted_vi.split('|')
         if mobile_id_received != mobile_id or sensor_id_received != sensor_id:
             return "Authentication failed", None
-        vi = encrypt(self.sensor_keys[sensor_id][0], f"{x_received}|{mobile_id}|{sensor_id}|{nonce}")
+        vi = encrypt(self.sensor_keys[sensor_id][0], f"{x_received}|{mobile_id}|{sensor_id}|{nonce}|{time.time()}")
         # Step 4
         decrypted_vi = decrypt(self.sensor_keys[sensor_id][0], vi)
-        x_received, mobile_id_received, sensor_id_received, t5 = decrypted_vi.split('|')
+        x_received, mobile_id_received, sensor_id_received, t5, samp = decrypted_vi.split('|')
+        decrypted_x = decrypt(self.sensor_keys[sensor_id][1], x)
+        ex, expert_id_received, m_received = decrypted_x.split('|')
+        if expert_id_received != expert_id:
+            return "Authentication failed", None
+        kssk = hash_data(f"{expert_id}|{sensor_id}|{m_received}")
+        l = encrypt(kssk, f"{sensor_id}|{expert_id}|{nonce}")
+        return l, kssk
+
+    def authenticate_mobile(self, mobile_id, expert_id, password, sensor_id, nonce):
+        cid_i, kj, kl = self.authenticate_expert(
+            expert_id, password, mobile_id, sensor_id, nonce
+        )
+        decrypted_cid_i = decrypt(kl, cid_i)
+        h_mid_received, m, mobile_id_received, sensor_id_received, t1 = (
+            decrypted_cid_i.split("|")
+        )
+        if (
+            h_mid_received != hash_data(expert_id).decode("latin1")
+            or mobile_id_received != mobile_id
+            or sensor_id_received != sensor_id
+        ):
+            return "Authentication failed", None
+        x = encrypt(self.sensor_keys[sensor_id][1], f"{expert_id}|{m}")
+        vi = encrypt(
+            self.mobile_keys[mobile_id],
+            f"{mobile_id}|{sensor_id}|{x.decode('latin1')}|{nonce}",
+        )
+        return vi
+
+    def authenticate_sensor(self, sensor_id, expert_id, mobile_id, nonce):
+        vi = self.authenticate_mobile(mobile_id, expert_id, password, sensor_id, nonce)
+        decrypted_vi = decrypt(self.mobile_keys[mobile_id], vi)
+        mobile_id_received, sensor_id_received, x_received, t3 = decrypted_vi.split("|")
+        if mobile_id_received != mobile_id or sensor_id_received != sensor_id:
+            return "Authentication failed", None
+        vi = encrypt(
+            self.sensor_keys[sensor_id][0],
+            f"{x_received}|{mobile_id}|{sensor_id}|{nonce}",
+        )
+        decrypted_vi = decrypt(self.sensor_keys[sensor_id][0], vi)
+        x_received, mobile_id_received, sensor_id_received, t5 = decrypted_vi.split("|")
         decrypted_x = decrypt(self.sensor_keys[sensor_id][1], x_received)
-        expert_id_received, m_received = decrypted_x.split('|')
+        expert_id_received, m_received = decrypted_x.split("|")
         if expert_id_received != expert_id:
             return "Authentication failed", None
         kssk = hash_data(f"{expert_id}|{sensor_id}|{m_received}")
@@ -69,11 +122,23 @@ class Gateway:
 
     def update_password(self, expert_id, old_password, new_password):
         rd = self.expert_keys[expert_id][1]
-        ni = hash_data(expert_id + hash_data(old_password + str(rd)).decode('latin1') + self.secret_key.decode('latin1'))
+        ni = hash_data(
+            expert_id
+            + hash_data(old_password + str(rd)).decode("latin1")
+            + self.secret_key.decode("latin1")
+        )
         if ni != self.expert_keys[expert_id][1]:
             return "Password update failed"
         rnew_d = random.randint(1000, 9999)
         epw_new = hash_data(new_password + str(rnew_d))
-        nnew_i = hash_data(expert_id + epw_new.decode('latin1') + self.secret_key.decode('latin1'))
-        self.expert_keys[expert_id] = (self.expert_keys[expert_id][0], rnew_d, self.expert_keys[expert_id][2], self.expert_keys[expert_id][3], nnew_i)
+        nnew_i = hash_data(
+            expert_id + epw_new.decode("latin1") + self.secret_key.decode("latin1")
+        )
+        self.expert_keys[expert_id] = (
+            self.expert_keys[expert_id][0],
+            rnew_d,
+            self.expert_keys[expert_id][2],
+            self.expert_keys[expert_id][3],
+            nnew_i,
+        )
         return epw_new, rnew_d, nnew_i

@@ -1,3 +1,4 @@
+import random
 from gateway import Gateway
 from mobile_device import MobileDevice
 from sensor import Sensor
@@ -32,9 +33,11 @@ if __name__ == "__main__":
     response = sensor.process_request(forwarded_request, session_key_components)
     print(f"Sensor Response: {response}")
 
+    nonce = str(random.randint(1000, 9999))
+
     # Authentication Phase
     print("\n=== Authentication Phase ===")
-    l, kssk = gateway.authenticate(expert_id, password, mobile_id, sensor_id, nonce)
+    l, kssk = expert.authenticate(mobile_id, sensor_id, nonce, gateway)
     if kssk is not None:
         print(f"Authentication Result: L={l}, KSSK={kssk}")
     else:
