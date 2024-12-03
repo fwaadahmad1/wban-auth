@@ -6,6 +6,16 @@
 
 ---
 
+### Output Example
+
+```plaintext
+node1 data integrity verified.
+Data tampered on node2!
+node3 data integrity verified.
+```
+
+---
+
 ### Implementation Plan:
 1. **Simulate Distributed Nodes**:
    - Create multiple nodes (simulated with dictionaries) storing encrypted patient data.
